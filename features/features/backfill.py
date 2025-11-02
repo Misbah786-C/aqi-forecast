@@ -8,15 +8,12 @@ import hopsworks
 import time
 import logging
 
-# ------------------------------------------------
-# Logging setup
-# ------------------------------------------------
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s"
 )
 
-# Read secrets from environment variables (GitHub Secrets)
 load_dotenv()
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -30,15 +27,11 @@ LON = float(os.environ.get("LON", 67.0011))
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TRAIN_DATA_PATH = os.path.join(BASE_DIR, "data", "features", "training_dataset.csv")
 
-# ------------------------------------------------
 # Key check
-# ------------------------------------------------
 if not OPENWEATHER_API_KEY or not AQICN_TOKEN or not HOPSWORKS_API_KEY:
     raise ValueError("Required secrets are not set in environment variables.")
 
-# ------------------------------------------------
-# Fetch live data
-# ------------------------------------------------
+
 def fetch_current_weather():
     url = f"https://api.openweathermap.org/data/2.5/weather?lat={LAT}&lon={LON}&appid={OPENWEATHER_API_KEY}&units=metric"
     try:
@@ -46,7 +39,7 @@ def fetch_current_weather():
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logging.error(f"⚠️ Weather fetch failed: {e}")
+        logging.error(f"Weather fetch failed: {e}")
         return {}
 
 def fetch_current_aqi():
@@ -56,16 +49,16 @@ def fetch_current_aqi():
         response.raise_for_status()
         return response.json().get("data", {})
     except Exception as e:
-        logging.error(f"⚠️ AQI fetch failed: {e}")
+        logging.error(f"AQI fetch failed: {e}")
         return {}
 
 def fetch_live_data():
-    logging.info("🌍 Fetching real-time AQI + weather data...")
+    logging.info("Fetching real-time AQI + weather data...")
     weather = fetch_current_weather()
     aqi = fetch_current_aqi()
 
     if not weather or not aqi:
-        logging.warning("⚠️ Missing live data, skipping real-time record.")
+        logging.warning("Missing live data, skipping real-time record.")
         return pd.DataFrame()
 
     now = datetime.now(timezone.utc)
@@ -99,70 +92,58 @@ def fetch_live_data():
 
     df = pd.DataFrame([row])
     df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
-    logging.info("✅ Live data fetched successfully!")
+    logging.info("Live data fetched successfully!")
     return df
 
-# ------------------------------------------------
-# Load training dataset
-# ------------------------------------------------
+
 def load_training_dataset():
     if not os.path.exists(TRAIN_DATA_PATH):
-        raise FileNotFoundError(f"❌ Training dataset not found at {TRAIN_DATA_PATH}")
+        raise FileNotFoundError(f"Training dataset not found at {TRAIN_DATA_PATH}")
 
     df = pd.read_csv(TRAIN_DATA_PATH)
     df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
-    logging.info(f"✅ Loaded training dataset with {len(df)} rows.")
+    logging.info(f"Loaded training dataset with {len(df)} rows.")
     return df
 
-# ------------------------------------------------
-# Backfill
-# ------------------------------------------------
+
 def backfill():
-    logging.info("🔐 Connecting to Hopsworks...")
+    logging.info("Connecting to Hopsworks...")
     project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
     fs = project.get_feature_store()
 
-    # ✅ Get existing feature group (DO NOT recreate)
     fg = fs.get_feature_group(name="aqi_features", version=1)
     df_existing = fg.read()
-    logging.info(f"📦 Loaded existing feature group with {len(df_existing)} rows.")
+    logging.info(f"Loaded existing feature group with {len(df_existing)} rows.")
 
-    # Load CSV + live data
     df_train = load_training_dataset()
     df_live = fetch_live_data()
 
-    # Combine
     df_combined = pd.concat([df_existing, df_train, df_live], ignore_index=True)
     df_combined["timestamp_utc"] = pd.to_datetime(df_combined["timestamp_utc"], utc=True, errors="coerce")
     df_combined = df_combined.drop_duplicates(subset=["timestamp_utc"], keep="last")
     df_combined = df_combined.sort_values("timestamp_utc")
 
-    # ✅ Forward Fill missing numeric values
     numeric_cols = df_combined.select_dtypes(include=[np.number]).columns
     df_combined[numeric_cols] = df_combined[numeric_cols].ffill()
     df_combined[numeric_cols] = df_combined[numeric_cols].fillna(0)
 
-    logging.info("🧹 Cleaned data with forward fill applied.")
-    logging.info(f"📊 Final dataset shape: {df_combined.shape}")
+    logging.info("Cleaned data with forward fill applied.")
+    logging.info(f"Final dataset shape: {df_combined.shape}")
 
-    # Upload back
     for attempt in range(1, 4):
         try:
-            logging.info(f"📤 Attempt {attempt}/3: Uploading to Hopsworks...")
+            logging.info(f"Attempt {attempt}/3: Uploading to Hopsworks...")
             fg.insert(df_combined, write_options={"wait_for_job": True})
-            logging.info("🚀 Successfully updated existing feature group!")
+            logging.info("Successfully updated existing feature group!")
             break
         except Exception as e:
-            logging.warning(f"⚠️ Upload failed (attempt {attempt}): {e}")
+            logging.warning(f"Upload failed (attempt {attempt}): {e}")
             if attempt < 3:
                 time.sleep(8)
             else:
                 raise
 
-# ------------------------------------------------
-# Main
-# ------------------------------------------------
 if __name__ == "__main__":
-    logging.info(f"🕒 Running backfill at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logging.info(f"Running backfill at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     backfill()
-    logging.info("✅ Backfill complete.")
+    logging.info("Backfill complete.")
