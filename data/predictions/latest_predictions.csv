@@ -1,4 +1,5 @@
-forecast_day,predicted_aqi,predicted_for_utc,model_version
-1,54.86,2025-11-03 12:31:08.033937+00:00,151
-2,54.86,2025-11-04 12:31:08.033937+00:00,151
-3,54.86,2025-11-05 12:31:08.033937+00:00,151
+forecast_day,predicted_aqi,predicted_for_utc,model_version,note
+0,161.0,2025-11-02 13:16:37.427756,1,real-time AQI
+1,11.96,2025-11-03 13:16:37.427756,1,predicted AQI
+2,11.96,2025-11-04 13:16:37.427756,1,predicted AQI
+3,11.96,2025-11-05 13:16:37.427756,1,predicted AQI
