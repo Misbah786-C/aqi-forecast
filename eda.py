@@ -5,59 +5,42 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import logging
 
-# ---------------------------------------------------------------
-# Logging setup
-# ---------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
-# ---------------------------------------------------------------
-# Load API key from environment
-# ---------------------------------------------------------------
 HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
 if not HOPSWORKS_API_KEY:
-    logging.error("❌ Missing 'AQI_FORECAST_API_KEY' in environment variables.")
+    logging.error("Missing 'AQI_FORECAST_API_KEY' in environment variables.")
     exit(1)
 
-# ---------------------------------------------------------------
-# Connect to Hopsworks
-# ---------------------------------------------------------------
 try:
-    logging.info("🔐 Connecting to Hopsworks...")
+    logging.info("Connecting to Hopsworks...")
     project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
     fs = project.get_feature_store()
-    logging.info("✅ Connected to Hopsworks successfully.")
+    logging.info("Connected to Hopsworks successfully.")
 except Exception as e:
-    logging.error(f"❌ Hopsworks connection failed: {e}")
+    logging.error(f"Hopsworks connection failed: {e}")
     exit(1)
 
-# ---------------------------------------------------------------
-# Fetch latest feature dataset
-# ---------------------------------------------------------------
 try:
-    logging.info("📥 Fetching latest feature data...")
+    logging.info("Fetching latest feature data...")
     feature_group = fs.get_feature_group(name="aqi_features", version=1)
     df = feature_group.read()
-    logging.info(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+    logging.info(f"Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
 except Exception as e:
-    logging.error(f"❌ Failed to fetch feature data: {e}")
+    logging.error(f"Failed to fetch feature data: {e}")
     exit(1)
 
-# ---------------------------------------------------------------
-# Run EDA
-# ---------------------------------------------------------------
 OUTPUT_DIR = "eda_outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Convert timestamp column
 try:
     df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], unit="ms")
 except Exception as e:
     logging.warning(f"⚠ Failed to convert timestamp: {e}")
 
-# 1. Summary stats
+#Summary stats
 summary = f"""
-📊 EDA Summary
---------------------------
+EDA Summary
 Rows: {df.shape[0]}
 Columns: {df.shape[1]}
 Missing Values: {df.isnull().sum().sum()}
@@ -65,9 +48,9 @@ Numeric Columns: {len(df.select_dtypes(include='number').columns)}
 """
 with open(os.path.join(OUTPUT_DIR, "eda_summary.txt"), "w") as f:
     f.write(summary)
-logging.info("📄 Summary saved.")
+logging.info("Summary saved.")
 
-# 2. AQI Trend Over Time
+#AQI Trend 
 try:
     plt.figure(figsize=(10, 5))
     sns.lineplot(data=df, x="timestamp_utc", y="aqi_aqicn", marker="o")
@@ -78,11 +61,11 @@ try:
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "aqi_trend.png"))
     plt.close()
-    logging.info("📈 AQI trend saved.")
+    logging.info("AQI trend saved.")
 except Exception as e:
-    logging.warning(f"⚠ Failed to generate AQI trend: {e}")
+    logging.warning(f"Failed to generate AQI trend: {e}")
 
-# 3. Correlation Heatmap (focused on AQI)
+#Correlation Heatmap
 try:
     plt.figure(figsize=(8, 6))
     correlations = df.corr(numeric_only=True)["aqi_aqicn"].sort_values(ascending=False)
@@ -91,11 +74,11 @@ try:
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "aqi_correlation.png"))
     plt.close()
-    logging.info("📊 AQI correlation heatmap saved.")
+    logging.info("AQI correlation heatmap saved.")
 except Exception as e:
-    logging.warning(f"⚠ Failed to generate AQI correlation heatmap: {e}")
+    logging.warning(f"Failed to generate AQI correlation heatmap: {e}")
 
-# 4. Scatter Plots for AQI vs Weather Parameters
+#Scatter Plots for AQI vs Weather Parameters
 weather_features = ["ow_temp", "ow_humidity", "ow_wind_speed"]
 for feature in weather_features:
     try:
@@ -105,14 +88,14 @@ for feature in weather_features:
         plt.tight_layout()
         plt.savefig(os.path.join(OUTPUT_DIR, f"aqi_vs_{feature}.png"))
         plt.close()
-        logging.info(f"📌 Scatter plot saved: AQI vs {feature}")
+        logging.info(f"Scatter plot saved: AQI vs {feature}")
     except Exception as e:
-        logging.warning(f"⚠ Failed to plot AQI vs {feature}: {e}")
+        logging.warning(f"Failed to plot AQI vs {feature}: {e}")
 
-# 5. Feature Importance (if model is available)
+#Feature Importance 
 try:
     from joblib import load
-    model = load("trained_model.joblib")  # Replace with your model path
+    model = load("trained_model.joblib")  
     importances = model.feature_importances_
     features = df.drop(columns=["aqi_aqicn", "timestamp_utc"]).columns[:len(importances)]
 
@@ -122,13 +105,13 @@ try:
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "feature_importance.png"))
     plt.close()
-    logging.info("📊 Feature importance saved.")
+    logging.info("Feature importance saved.")
 except Exception as e:
-    logging.warning(f"⚠ Feature importance plot skipped: {e}")
+    logging.warning(f"Feature importance plot skipped: {e}")
 
-# 6. Actual vs Predicted AQI (if predictions available)
+#Actual vs Predicted AQI 
 try:
-    predictions = pd.read_csv("predictions.csv")["AQI_Predicted"]  # Replace with your prediction source
+    predictions = pd.read_csv("predictions.csv")["AQI_Predicted"]  
     plt.figure(figsize=(10, 5))
     sns.lineplot(x=range(len(df)), y=df["aqi_aqicn"], label="Actual AQI")
     sns.lineplot(x=range(len(df)), y=predictions, label="Predicted AQI")
@@ -139,8 +122,8 @@ try:
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "actual_vs_predicted.png"))
     plt.close()
-    logging.info("📉 Prediction comparison saved.")
+    logging.info("Prediction comparison saved.")
 except Exception as e:
-    logging.warning(f"⚠ Failed to plot actual vs predicted AQI: {e}")
+    logging.warning(f"Failed to plot actual vs predicted AQI: {e}")
 
-logging.info("✅ EDA completed. All results saved in 'eda_outputs/' folder.")
+logging.info("EDA completed. All results saved in 'eda_outputs/' folder.")
