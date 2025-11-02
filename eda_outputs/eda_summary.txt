@@ -1,7 +1,7 @@
 
 📊 EDA Summary
 --------------------------
-Rows: 257
+Rows: 258
 Columns: 26
 Missing Values: 0
 Numeric Columns: 25
