@@ -2,7 +2,7 @@ name: AQI Forecast CI/CD Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Every hour (UTC)
+    - cron: "0 * * * *"   
   workflow_dispatch:
   push:
     branches:
@@ -20,11 +20,12 @@ jobs:
       AQICN_TOKEN: ${{ secrets.AQICN_TOKEN }}
       OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
       AQI_FORECAST_API_KEY: ${{ secrets.AQI_FORECAST_API_KEY }}
+      CITY: "Karachi"
+      LAT: "24.8607"
+      LON: "67.0011"
 
     steps:
-      # ------------------------
-      # 1. Setup environment
-      # ------------------------
+      
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -45,15 +46,14 @@ jobs:
           echo "Installed hopsworks version:"
           pip list | grep hopsworks || echo "Hopsworks not found!"
 
-      # ------------------------
-      # 2. Data Backfill
-      # ------------------------
-      - name: Backfill AQI & Weather Data
-        run: python features/features/backfill.py
+       #Data Backfill (Historical + Live)
+      - name: Backfill Historical Data (3 APIs merged)
+        run: python features/backfill.py
 
-      # ------------------------
-      # 3. Exploratory Data Analysis (EDA)
-      # ------------------------
+      - name: Backfill Live Data (2 APIs merged)
+        run: python features/backfill_live.py
+
+        #eda
       - name: Run EDA on latest features
         env:
           AQI_FORECAST_API_KEY: ${{ secrets.AQI_FORECAST_API_KEY }}
@@ -63,14 +63,12 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add eda_outputs/* || true
+          git add dashboard/eda_outputs/* || true
           git commit -m "Auto-update: EDA outputs [skip ci]" || echo "No EDA changes to commit"
           git push || echo "No EDA changes to push"
 
-      # ------------------------
-      # 4. Train and Predict
-      # ------------------------
-      - name: Train Random Forest model
+      #Train + Predict
+      - name: Train Model
         run: python trainings/train_sklearn.py
 
       - name: Generate Predictions
@@ -84,13 +82,13 @@ jobs:
           git commit -m "Auto-update: Latest predictions [skip ci]" || echo "No prediction changes to commit"
           git push || echo "No prediction changes to push"
 
-      # ------------------------
-      # 5. Sync EDA results to Dashboard
-      # ------------------------
-      - name: Sync EDA outputs to dashboard
+      #Dashboard
+      - name: Sync outputs to dashboard
         run: |
           mkdir -p dashboard/eda_outputs
+          mkdir -p dashboard/predictions
           cp -r eda_outputs/* dashboard/eda_outputs/ || echo "No EDA outputs found"
-          git add dashboard/eda_outputs/* || true
-          git commit -m "🪄 Sync: EDA outputs to dashboard [skip ci]" || echo "No dashboard changes"
+          cp -r data/predictions/* dashboard/predictions/ || echo "No predictions found"
+          git add dashboard/* || true
+          git commit -m "🪄 Sync: Dashboard updates [skip ci]" || echo "No dashboard changes"
           git push || echo "No dashboard changes to push"
