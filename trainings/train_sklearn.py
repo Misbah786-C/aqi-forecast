@@ -1,120 +1,139 @@
 import os
-import pandas as pd
-import numpy as np
-import hopsworks
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import joblib
-from dotenv import load_dotenv
+import json
 import logging
+import numpy as np
+import pandas as pd
+import joblib
+from datetime import datetime, timedelta
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.model_selection import train_test_split
+import hopsworks
+from dotenv import load_dotenv
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
 
 logger.info("Connecting to Hopsworks...")
 project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
 fs = project.get_feature_store()
-
+mr = project.get_model_registry()
 
 logger.info("Loading feature group 'aqi_features' (version 1)...")
 fg = fs.get_feature_group(name="aqi_features", version=1)
 df = fg.read()
-logger.info(f"Data loaded from Hopsworks! Shape: {df.shape}")
+logger.info(f"Data loaded — shape: {df.shape}")
 
-logger.info("Cleaning and preparing data...")
-df = df.dropna(subset=["aqi_aqicn"])
-df.fillna(method="ffill", inplace=True)
-df.fillna(method="bfill", inplace=True)
+df.replace([np.inf, -np.inf], np.nan, inplace=True)
+df.ffill(inplace=True)
+df.bfill(inplace=True)
+df.drop_duplicates(inplace=True)
 
-feature_cols = [
-    "ow_temp", "ow_pressure", "ow_humidity", "ow_wind_speed", "ow_wind_deg",
-    "ow_clouds", "ow_co", "ow_no2", "ow_pm2_5", "ow_pm10",
-    "hour", "day", "month", "weekday"
-]
+numeric_cols = df.select_dtypes(include=np.number).columns
+df = df[(df[numeric_cols] <= 1e6).all(axis=1)]
+
 target_col = "aqi_aqicn"
-
-df = df.dropna(subset=feature_cols)
+feature_cols = [c for c in numeric_cols if c != target_col]
+df.dropna(subset=[target_col] + feature_cols, inplace=True)
 X = df[feature_cols]
 y = df[target_col]
-
-logger.info(f"Features shape: {X.shape}")
-logger.info(f"Target shape: {y.shape}")
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
+logger.info(f"Using features: {feature_cols}")
 
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+X_scaled = scaler.fit_transform(X)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
 
 logger.info("Training Random Forest model...")
-rf_model = RandomForestRegressor(
-    n_estimators=200,
-    max_depth=10,
-    random_state=42
-)
-rf_model.fit(X_train_scaled, y_train)
+rf = RandomForestRegressor(n_estimators=200, max_depth=20, random_state=42, n_jobs=-1)
+rf.fit(X_train, y_train)
 
-y_pred = rf_model.predict(X_test_scaled)
-rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
-
-logger.info("\nRandom Forest Evaluation (test split):")
-logger.info(f"RMSE: {rmse:.2f}")
-logger.info(f"MAE: {mae:.2f}")
-logger.info(f"R²: {r2:.2f}")
-
+y_pred_test = rf.predict(X_test)
+metrics = {
+    "RMSE": round(np.sqrt(mean_squared_error(y_test, y_pred_test)), 3),
+    "MAE": round(mean_absolute_error(y_test, y_pred_test), 3),
+    "R2": round(r2_score(y_test, y_pred_test), 3)
+}
+logger.info(f"Test Set Performance: {metrics}")
 
 logger.info("Retraining on full dataset for deployment...")
-X_scaled_full = scaler.fit_transform(X)
-rf_model.fit(X_scaled_full, y)
+rf.fit(X_scaled, y)
 
-
-MODEL_DIR = "models/rf_model"
+MODEL_NAME = "rf_aqi_model"
+MODEL_DIR = os.path.join("models", MODEL_NAME)
 os.makedirs(MODEL_DIR, exist_ok=True)
-MODEL_PATH = os.path.join(MODEL_DIR, "model.joblib")
-SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
 
-joblib.dump(rf_model, MODEL_PATH)
-joblib.dump(scaler, SCALER_PATH)
+joblib.dump(rf, os.path.join(MODEL_DIR, "model.joblib"), compress=3)
+joblib.dump(scaler, os.path.join(MODEL_DIR, "scaler.joblib"), compress=3)
 
-logger.info(f"Model saved to {MODEL_PATH}")
-logger.info(f"Scaler saved to {SCALER_PATH}")
+metadata = {
+    "model_name": MODEL_NAME,
+    "trained_at": datetime.now().isoformat(),
+    "features_used": feature_cols,
+    "target": target_col,
+    "metrics": metrics
+}
+with open(os.path.join(MODEL_DIR, "metadata.json"), "w") as f:
+    json.dump(metadata, f, indent=4)
 
-logger.info("Uploading model + scaler to Hopsworks Model Registry...")
-mr = project.get_model_registry()
+logger.info(f"Artifacts saved locally at: {MODEL_DIR}")
 
+logger.info("Uploading/updating model in Hopsworks Model Registry...")
 try:
-    existing_models = mr.get_models("rf_aqi_model")
-    for m in existing_models:
-        logger.info(f"Deleting old version {m.version}...")
-        m.delete()
-except hopsworks.client.exceptions.RestAPIError:
-    logger.info("No existing versions found. Creating new model...")
+    model_meta = mr.get_model(MODEL_NAME)
+    logger.info(f"Model '{MODEL_NAME}' exists. Updating files...")
+    model_meta.update(MODEL_DIR)
+except Exception:
+    logger.info(f"Model '{MODEL_NAME}' does not exist. Creating new entry...")
+    model_meta = mr.python.create_model(
+        name=MODEL_NAME,
+        metrics=metrics,
+        description="Random Forest model for Karachi AQI forecasting"
+    )
+    model_meta.save(MODEL_DIR)
 
-model_meta = mr.python.create_model(
-    name="rf_aqi_model",
-    metrics={"rmse": rmse, "mae": mae, "r2": r2},
-    description="Random Forest model for Karachi AQI forecasting (always fresh version)"
-)
-model_meta.save(MODEL_DIR)
+logger.info("Model successfully saved/updated in Hopsworks.")
+logger.info("Training pipeline completed successfully!")
 
-logger.info("Model successfully uploaded as a fresh version!")
-logger.info("Training pipeline completed successfully.")
+def predict_current_aqi(model, scaler, latest_features: pd.DataFrame) -> float:
+    """
+    Predict the AQI for the latest features (real-time)
+    """
+    X_scaled = scaler.transform(latest_features[feature_cols])
+    prediction = model.predict(X_scaled)[0]
+    return prediction
 
+def predict_next_days_aqi(model, scaler, latest_features: pd.DataFrame, days: int = 3) -> list:
+    """
+    Predict AQI for the next `days` using recursive strategy
+    """
+    df_copy = latest_features.copy()
+    preds = []
+    
+    for i in range(days):
+        X_scaled = scaler.transform(df_copy[feature_cols])
+        pred = model.predict(X_scaled)[0]
+        preds.append(pred)
+        
+        df_copy[target_col] = pred
+        
+        if 'hour' in df_copy.columns:
+            df_copy['hour'] += 24  
+        if 'day_of_week' in df_copy.columns:
+            df_copy['day_of_week'] = (df_copy['day_of_week'] + 1) % 7
 
+    return preds
 
+if __name__ == "__main__":
+    latest_row = df.tail(1)  
+    current_aqi = predict_current_aqi(rf, scaler, latest_row)
+    next_3_days = predict_next_days_aqi(rf, scaler, latest_row, days=3)
+    
+    logger.info(f"Current AQI: {current_aqi:.2f}")
+    logger.info(f"Next 3-day forecast: {next_3_days}")

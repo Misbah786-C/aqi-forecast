@@ -1,0 +1,38 @@
+{
+    "model_name": "rf_aqi_model",
+    "trained_at": "2025-11-03T18:41:05.538708",
+    "features_used": [
+        "ow_temp",
+        "ow_humidity",
+        "ow_pressure",
+        "ow_wind_speed",
+        "ow_wind_deg",
+        "ow_clouds",
+        "ow_pm10",
+        "ow_pm2_5",
+        "ow_co",
+        "ow_no2",
+        "ow_so2",
+        "ow_o3",
+        "hour",
+        "day",
+        "month",
+        "weekday",
+        "temp",
+        "humidity",
+        "pressure",
+        "wind_speed",
+        "aqi",
+        "pm2_5",
+        "pm10",
+        "no2",
+        "so2",
+        "co"
+    ],
+    "target": "aqi_aqicn",
+    "metrics": {
+        "RMSE": 7.423,
+        "MAE": 3.579,
+        "R2": 0.835
+    }
+}

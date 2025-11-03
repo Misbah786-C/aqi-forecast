@@ -4,28 +4,34 @@ import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 CITY = os.getenv("CITY", "Karachi")
 
-def fetch_aqicn():
-    """Fetch live AQI data from AQICN API"""
-    url = f"https://api.waqi.info/feed/{CITY}/?token={AQICN_TOKEN}"
-    response = requests.get(url).json()
+EXPECTED_COLS = ["city", "datetime", "aqi", "pm2_5", "pm10", "no2", "so2", "co", "o3"]
 
-    if response["status"] != "ok":
-        print("❌ Failed to fetch AQICN data:", response)
+def fetch_aqicn():
+    """Fetch live AQI data from AQICN API and save to CSV."""
+    url = f"https://api.waqi.info/feed/{CITY}/?token={AQICN_TOKEN}"
+    
+    try:
+        response = requests.get(url, timeout=10).json()
+    except Exception as e:
+        print(f"Failed to fetch AQICN data: {e}")
+        return None
+
+    if response.get("status") != "ok":
+        print("Failed to fetch AQICN data:", response)
         return None
 
     data = response["data"]
-    iaqi = data["iaqi"]
+    iaqi = data.get("iaqi", {})
 
     record = {
         "city": CITY,
         "datetime": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "aqi": data["aqi"],
+        "aqi": data.get("aqi"),
         "pm2_5": iaqi.get("pm25", {}).get("v"),
         "pm10": iaqi.get("pm10", {}).get("v"),
         "no2": iaqi.get("no2", {}).get("v"),
@@ -35,14 +41,18 @@ def fetch_aqicn():
     }
 
     df = pd.DataFrame([record])
-    output_path = os.path.join(os.getcwd(), "aqicn_data.csv")
+    df = df.reindex(columns=EXPECTED_COLS)
+
+    output_dir = os.path.join(os.getcwd(), "data", "raw_aqicn")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "aqicn_data.csv")
 
     if os.path.exists(output_path):
         df.to_csv(output_path, mode="a", header=False, index=False)
     else:
         df.to_csv(output_path, index=False)
 
-    print("✅ AQICN data fetched and saved successfully!")
+    print(f"AQICN data fetched and saved successfully! Total rows now in file: {len(pd.read_csv(output_path))}")
     return df
 
 

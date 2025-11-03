@@ -1,149 +1,159 @@
 import os
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
-import requests
+from datetime import datetime
 from dotenv import load_dotenv
 import hopsworks
-import time
+from hsfs.feature_group import FeatureGroup
+from hsfs.client.exceptions import FeatureStoreException
 import logging
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+BASE_DIR = os.getcwd()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s"
-)
+OPENMETEO_PATH = os.path.join(BASE_DIR, "data", "raw_openmeteo", "openmeteo_6months.csv")
+OPENWEATHER_PATH = os.path.join(BASE_DIR, "data", "raw_openweather", "openweather_data.csv")
+AQICN_PATH = os.path.join(BASE_DIR, "data", "raw_aqicn", "aqicn_data.csv")
+
+FEATURES_DIR = os.path.join(BASE_DIR, "data", "features")
+os.makedirs(FEATURES_DIR, exist_ok=True)
+
+TRAIN_CSV = os.path.join(FEATURES_DIR, "training_dataset.csv")
+TRAIN_PARQUET = TRAIN_CSV.replace(".csv", ".parquet")
+
+CITY = "Karachi"
 
 load_dotenv()
-
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
-
-CITY = os.environ.get("CITY", "Karachi")
-LAT = float(os.environ.get("LAT", 24.8607))
-LON = float(os.environ.get("LON", 67.0011))
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TRAIN_DATA_PATH = os.path.join(BASE_DIR, "data", "features", "training_dataset.csv")
-
-# Key check
-if not OPENWEATHER_API_KEY or not AQICN_TOKEN or not HOPSWORKS_API_KEY:
-    raise ValueError("Required secrets are not set in environment variables.")
+OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY")
+AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 
 
-def fetch_current_weather():
-    url = f"https://api.openweathermap.org/data/2.5/weather?lat={LAT}&lon={LON}&appid={OPENWEATHER_API_KEY}&units=metric"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logging.error(f"Weather fetch failed: {e}")
-        return {}
-
-def fetch_current_aqi():
-    url = f"https://api.waqi.info/feed/geo:{LAT};{LON}/?token={AQICN_TOKEN}"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.json().get("data", {})
-    except Exception as e:
-        logging.error(f"AQI fetch failed: {e}")
-        return {}
-
-def fetch_live_data():
-    logging.info("Fetching real-time AQI + weather data...")
-    weather = fetch_current_weather()
-    aqi = fetch_current_aqi()
-
-    if not weather or not aqi:
-        logging.warning("Missing live data, skipping real-time record.")
+def load_csv(path, name):
+    if not os.path.exists(path):
+        logging.warning(f"Missing file: {path}")
         return pd.DataFrame()
-
-    now = datetime.now(timezone.utc)
-    main = weather.get("main", {})
-    wind = weather.get("wind", {})
-    clouds = weather.get("clouds", {})
-    iaqi = aqi.get("iaqi", {})
-
-    row = {
-        "timestamp_utc": now,
-        "ow_temp": main.get("temp"),
-        "ow_pressure": main.get("pressure"),
-        "ow_humidity": main.get("humidity"),
-        "ow_wind_speed": wind.get("speed"),
-        "ow_wind_deg": wind.get("deg"),
-        "ow_clouds": clouds.get("all"),
-        "ow_co": iaqi.get("co", {}).get("v"),
-        "ow_no": iaqi.get("no", {}).get("v"),
-        "ow_no2": iaqi.get("no2", {}).get("v"),
-        "ow_o3": iaqi.get("o3", {}).get("v"),
-        "ow_so2": iaqi.get("so2", {}).get("v"),
-        "ow_pm2_5": iaqi.get("pm25", {}).get("v"),
-        "ow_pm10": iaqi.get("pm10", {}).get("v"),
-        "ow_nh3": iaqi.get("nh3", {}).get("v"),
-        "aqi_aqicn": aqi.get("aqi"),
-        "hour": now.hour,
-        "day": now.day,
-        "month": now.month,
-        "weekday": now.weekday(),
-    }
-
-    df = pd.DataFrame([row])
-    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
-    logging.info("Live data fetched successfully!")
+    df = pd.read_csv(path)
+    if "datetime" in df.columns:
+        df["timestamp_utc"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
+        df.drop(columns=["datetime"], inplace=True)
+    else:
+        logging.warning(f"Missing 'datetime' column in {name}")
+        return pd.DataFrame()
+    df.dropna(subset=["timestamp_utc"], inplace=True)
+    df.drop_duplicates(subset=["timestamp_utc"], inplace=True)
+    df.sort_values("timestamp_utc", inplace=True)
+    logging.info(f"Loaded {name}: {len(df)} rows")
     return df
 
 
-def load_training_dataset():
-    if not os.path.exists(TRAIN_DATA_PATH):
-        raise FileNotFoundError(f"Training dataset not found at {TRAIN_DATA_PATH}")
+def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-    df = pd.read_csv(TRAIN_DATA_PATH)
-    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
-    logging.info(f"Loaded training dataset with {len(df)} rows.")
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    for col in num_cols:
+        df[col] = df[col].interpolate(method="linear", limit_direction="both")
+        if df[col].isna().sum() > 0:
+            df[col].fillna(df[col].median(), inplace=True)
+        if (df[col] == 0).any() and (df[col] == 0).mean() < 0.8:
+            df.loc[df[col] == 0, col] = df[col].median()
+
+    if "city" not in df.columns:
+        df["city"] = CITY
+    df["city"].fillna(CITY, inplace=True)
+
+    df["hour"] = df["timestamp_utc"].dt.hour.astype(float)
+    df["day"] = df["timestamp_utc"].dt.day.astype(float)
+    df["month"] = df["timestamp_utc"].dt.month.astype(float)
+    df["weekday"] = df["timestamp_utc"].dt.weekday.astype(float)
+
+    df.drop_duplicates(subset=["timestamp_utc"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    logging.info(f"Cleaned dataset: {df.shape[0]} rows, {df.shape[1]} columns")
     return df
 
 
-def backfill():
+def merge_local():
+    logging.info("Merging Open-Meteo + OpenWeather + AQICN")
+    df_meteo = load_csv(OPENMETEO_PATH, "Open-Meteo")
+    df_ow = load_csv(OPENWEATHER_PATH, "OpenWeather")
+    df_aqi = load_csv(AQICN_PATH, "AQICN")
+
+    dfs = [df for df in [df_meteo, df_ow, df_aqi] if not df.empty]
+    if len(dfs) < 2:
+        logging.error("Not enough datasets to merge.")
+        return None
+
+    df_combined = dfs[0]
+    for df_next in dfs[1:]:
+        df_combined = pd.merge_asof(
+            df_combined, df_next,
+            on="timestamp_utc",
+            direction="nearest",
+            tolerance=pd.Timedelta("15min")
+        )
+
+    df_combined.columns = (
+        df_combined.columns.str.lower()
+        .str.strip()
+        .str.replace("_x", "", regex=False)
+        .str.replace("_y", "", regex=False)
+    )
+    df_combined = df_combined.loc[:, ~df_combined.columns.duplicated(keep="first")]
+
+    df_combined = clean_dataset(df_combined)
+
+    if "o3" in df_combined.columns:
+        df_combined.drop(columns=["o3"], inplace=True)
+        logging.info("Dropped 'o3' column (too many NaNs)")
+
+    df_combined.to_csv(TRAIN_CSV, index=False)
+    df_combined.to_parquet(TRAIN_PARQUET, index=False)
+    logging.info(f"Saved merged dataset → {TRAIN_PARQUET}")
+    return df_combined
+
+
+def upload_to_hopsworks(df: pd.DataFrame):
     logging.info("Connecting to Hopsworks...")
     project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
     fs = project.get_feature_store()
 
-    fg = fs.get_feature_group(name="aqi_features", version=1)
-    df_existing = fg.read()
-    logging.info(f"Loaded existing feature group with {len(df_existing)} rows.")
+    version = 1
+    fg = None
+    uploaded = False
 
-    df_train = load_training_dataset()
-    df_live = fetch_live_data()
-
-    df_combined = pd.concat([df_existing, df_train, df_live], ignore_index=True)
-    df_combined["timestamp_utc"] = pd.to_datetime(df_combined["timestamp_utc"], utc=True, errors="coerce")
-    df_combined = df_combined.drop_duplicates(subset=["timestamp_utc"], keep="last")
-    df_combined = df_combined.sort_values("timestamp_utc")
-
-    numeric_cols = df_combined.select_dtypes(include=[np.number]).columns
-    df_combined[numeric_cols] = df_combined[numeric_cols].ffill()
-    df_combined[numeric_cols] = df_combined[numeric_cols].fillna(0)
-
-    logging.info("Cleaned data with forward fill applied.")
-    logging.info(f"Final dataset shape: {df_combined.shape}")
-
-    for attempt in range(1, 4):
+    while not uploaded:
         try:
-            logging.info(f"Attempt {attempt}/3: Uploading to Hopsworks...")
-            fg.insert(df_combined, write_options={"wait_for_job": True})
-            logging.info("Successfully updated existing feature group!")
-            break
-        except Exception as e:
-            logging.warning(f"Upload failed (attempt {attempt}): {e}")
-            if attempt < 3:
-                time.sleep(8)
+            fg = fs.get_or_create_feature_group(
+                name="aqi_features",
+                version=version,
+                primary_key=["timestamp_utc"],
+                description="Air quality and weather merged dataset",
+                online_enabled=False,
+            )
+            fg.insert(df, write_options={"wait_for_job": True})
+            logging.info(f"Uploaded to feature group: aqi_features v{version}")
+            uploaded = True
+        except FeatureStoreException as e:
+            if "not compatible" in str(e).lower():
+                version += 1
+                logging.warning(f"Schema mismatch, retrying with version {version}...")
             else:
-                raise
+                logging.error(f"Hopsworks upload failed: {e}")
+                break
+
+
+def backfill():
+    logging.info(f"Running backfill at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    df = merge_local()
+    if df is None:
+        logging.error("Backfill failed — no merged data.")
+        return
+    upload_to_hopsworks(df)
+    logging.info(f"Backfill complete: {len(df)} rows, {df.shape[1]} columns uploaded.")
+
 
 if __name__ == "__main__":
-    logging.info(f"Running backfill at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     backfill()
-    logging.info("Backfill complete.")

@@ -1,81 +1,89 @@
 import os
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
+import hopsworks
+from dotenv import load_dotenv
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
-def load_latest_parquet_or_csv(parquet_path: str, csv_path: str, timestamp_col: str) -> pd.DataFrame:
-    """
-    Load data from parquet if exists, otherwise load CSV and save as parquet.
-    Ensures the timestamp column exists.
-    """
-    if os.path.exists(parquet_path):
-        df = pd.read_parquet(parquet_path)
-        logging.info(f"Loaded data from {parquet_path}")
-    elif os.path.exists(csv_path):
-        df = pd.read_csv(csv_path)
-        logging.info(f"Loaded data from {csv_path}, saving as parquet...")
-        os.makedirs(os.path.dirname(parquet_path), exist_ok=True)
-        df.to_parquet(parquet_path, index=False)
+BASE_DIR = os.getcwd()
+FEATURES_DIR = os.path.join(BASE_DIR, "data", "features")
+TRAIN_PARQUET = os.path.join(FEATURES_DIR, "training_dataset.parquet")
+TRAIN_CSV = TRAIN_PARQUET.replace(".parquet", ".csv")
+
+load_dotenv()
+API_KEY = os.getenv("AQI_FORECAST_API_KEY")
+if not API_KEY:
+    raise ValueError("Missing AQI_FORECAST_API_KEY in .env file")
+
+def load_training_data():
+    """Load local training dataset and clean for Hopsworks upload."""
+    if os.path.exists(TRAIN_PARQUET):
+        df = pd.read_parquet(TRAIN_PARQUET)
+        logger.info(f"Loaded training data from {TRAIN_PARQUET}")
+    elif os.path.exists(TRAIN_CSV):
+        df = pd.read_csv(TRAIN_CSV)
+        logger.info(f"Loaded training data from {TRAIN_CSV}")
     else:
-        raise FileNotFoundError(f"Neither {parquet_path} nor {csv_path} found!")
+        raise FileNotFoundError("No training dataset found in data/features")
 
-    # Ensure timestamp column exists
-    if timestamp_col not in df.columns:
-        df[timestamp_col] = datetime.now(timezone.utc).isoformat()
+    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
+    df.dropna(subset=["timestamp_utc"], inplace=True)
 
+    df.columns = df.columns.str.lower().str.strip()
+    for suffix in ["_x", "_y"]:
+        df.columns = [c.replace(suffix, "") for c in df.columns]
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    df = df.loc[:, ~df.columns.str.contains("^unnamed")]
+
+    int_cols = df.select_dtypes(include=["int", "int32", "int64"]).columns
+    if len(int_cols) > 0:
+        df[int_cols] = df[int_cols].astype(float)
+
+    if "city" not in df.columns:
+        df["city"] = "Karachi"
+    df["city"].fillna("Karachi", inplace=True)
+
+    df.drop_duplicates(subset=["timestamp_utc", "city"], inplace=True)
+    logger.info(f"Final dataset shape: {df.shape}")
     return df
 
-def build_features():
-    # Absolute paths
-    ow_csv = r"C:\projects\aqi_forecast\openweather_data.csv"
-    ow_parquet = r"C:\projects\aqi_forecast\data\raw_openweather\latest_openweather.parquet"
+def upload_to_hopsworks():
+    """Upload cleaned data to Hopsworks Feature Store."""
+    df = load_training_data()
 
-    aqicn_csv = r"C:\projects\aqi_forecast\aqicn_data.csv"
-    aqicn_parquet = r"C:\projects\aqi_forecast\data\raw_aqicn\latest_aqicn.parquet"
+    logger.info("Connecting to Hopsworks...")
+    project = hopsworks.login(api_key_value=API_KEY)
+    fs = project.get_feature_store()
 
-    out_dir = r"C:\projects\aqi_forecast\data\features"
-    os.makedirs(out_dir, exist_ok=True)
+    FG_NAME = "aqi_features"
+    TARGET_VERSION = 1  
 
-    # Load datasets
-    df_ow = load_latest_parquet_or_csv(ow_parquet, ow_csv, "ow_timestamp")
-    df_aq = load_latest_parquet_or_csv(aqicn_parquet, aqicn_csv, "aqicn_timestamp")
+    try:
+        existing_groups = fs.get_feature_groups(name=FG_NAME)
+        if existing_groups:
+            latest_version = max([fg.version for fg in existing_groups])
+            TARGET_VERSION = latest_version + 1
+    except Exception:
+        TARGET_VERSION = 1
 
-    # Add prefixes to avoid duplicate column names
-    df_ow = df_ow.add_prefix("ow_")
-    df_aq = df_aq.add_prefix("aqicn_")
+    logger.info(f"Creating Feature Group '{FG_NAME}' version {TARGET_VERSION}...")
+    fg = fs.create_feature_group(
+        name=FG_NAME,
+        version=TARGET_VERSION,
+        primary_key=["timestamp_utc", "city"],
+        description="Merged AQI + weather dataset (cleaned and normalized)",
+        online_enabled=False
+    )
 
-    # Rename timestamp columns back
-    df_ow = df_ow.rename(columns={"ow_ow_timestamp": "ow_timestamp"})
-    df_aq = df_aq.rename(columns={"aqicn_aqicn_timestamp": "aqicn_timestamp"})
-
-    # Merge side by side
-    df = pd.concat([df_ow, df_aq], axis=1)
-
-    # Use OpenWeather timestamp as main
-    df["timestamp_utc"] = pd.to_datetime(df["ow_timestamp"], utc=True, errors="coerce")
-    df["timestamp_utc"].fillna(datetime.now(timezone.utc), inplace=True)
-
-    # Add time-based features
-    df["hour"] = df["timestamp_utc"].dt.hour
-    df["day"] = df["timestamp_utc"].dt.day
-    df["month"] = df["timestamp_utc"].dt.month
-    df["weekday"] = df["timestamp_utc"].dt.weekday  # 0=Mon, 6=Sun
-
-    # Save outputs
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    ts_file = os.path.join(out_dir, f"features_{ts}.parquet")
-    latest_file = os.path.join(out_dir, "latest_features.parquet")
-
-    df.to_parquet(ts_file, index=False)
-    df.to_parquet(latest_file, index=False)
-
-    logging.info(f"Saved {ts_file} and updated {latest_file}")
-    print(df.head())
+    logger.info("Uploading data to Hopsworks Feature Store...")
+    fg.insert(df, write_options={"wait_for_job": True})
+    logger.info(f"Upload complete: {len(df)} rows inserted into '{FG_NAME}' (v{TARGET_VERSION})")
 
 if __name__ == "__main__":
-    build_features()
+    start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logger.info(f"Feature upload started at {start_time}")
+    upload_to_hopsworks()
+    logger.info("Feature upload completed successfully!")
