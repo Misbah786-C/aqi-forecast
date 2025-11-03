@@ -1,9 +1,4 @@
-# ===============================
-# AQI Forecasting Project
-# Streamlit Cloud Deployment (GitHub Actions CI/CD)
-# ===============================
-
-# ---- Core Dependencies ----
+# Core Dependencies
 requests
 pandas>=2.0,<2.2
 numpy
@@ -13,22 +8,21 @@ seaborn
 joblib
 python-dotenv
 
-# ---- Deep Learning ----
-tensorflow==2.18.0
+# Deep Learning
+tensorflow
 
-# ---- Feature Store & Cloud ----
-hopsworks[python]==4.2.8
+# Feature Store & Cloud
+hopsworks
 confluent-kafka
 
-# ---- Web Framework ----
-streamlit>=1.30.0
+# Web Framework
+streamlit
 flask
 
-# ---- Visualization & Explainability ----
+# Visualization & Explainability
 shap
 plotly
 altair
 
-# ---- Development Utilities ----
+# Development Utilities
 tqdm
-rich
