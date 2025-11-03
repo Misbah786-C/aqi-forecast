@@ -5,7 +5,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.log
 *.tmp
 *.ipynb_checkpoints/
 .DS_Store
@@ -21,20 +20,13 @@ env/
 # --------------------------------------------------
 scheduler*.py
 
-
-# Hide Parquet files
-*.parquet
-
 # --------------------------------------------------
-# Model Artifacts
+# Keep all data, EDA outputs, and models
+# (No ignore rules for *.csv, eda_outputs/, or models/)
 # --------------------------------------------------
-models/
-!models/README.md
-# Optional: track only specific models
-# !models/my_trained_model.pkl
 
 # --------------------------------------------------
-# Hopsworks / Cache
+# Hopsworks / Cache / Temp
 # --------------------------------------------------
 hopsworks_cache/
 tmp/
@@ -52,4 +44,10 @@ __MACOSX/
 # CI/CD / Scheduler
 # --------------------------------------------------
 .github/*.log
+
+# Ignore root-level EDA outputs (if accidentally created)
+eda_outputs/
+
+# Keep outputs under dashboard
+!dashboard/eda_outputs/
 

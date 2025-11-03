@@ -48,10 +48,10 @@ jobs:
 
        #Data Backfill (Historical + Live)
       - name: Backfill Historical Data (3 APIs merged)
-        run: python features/backfill.py
+        run: python features/features/backfill.py
 
       - name: Backfill Live Data (2 APIs merged)
-        run: python features/backfill_live.py
+        run: python features/features/backfill_live.py
 
         #eda
       - name: Run EDA on latest features
