@@ -1,6 +1,4 @@
-# --------------------------------------------------
-# Python / General
-# --------------------------------------------------
+
 __pycache__/
 *.pyc
 *.pyo
@@ -15,39 +13,31 @@ env/
 *.sqlite3
 *.db
 
-# --------------------------------------------------
-# Root files to ignore
-# --------------------------------------------------
+data/
+
 scheduler*.py
 
-# --------------------------------------------------
-# Keep all data, EDA outputs, and models
-# (No ignore rules for *.csv, eda_outputs/, or models/)
-# --------------------------------------------------
 
-# --------------------------------------------------
-# Hopsworks / Cache / Temp
-# --------------------------------------------------
 hopsworks_cache/
 tmp/
 cache/
 __MACOSX/
 
-# --------------------------------------------------
-# IDE / Editor
-# --------------------------------------------------
+
 .vscode/
 .idea/
 *.code-workspace
 
-# --------------------------------------------------
-# CI/CD / Scheduler
-# --------------------------------------------------
 .github/*.log
 
-# Ignore root-level EDA outputs (if accidentally created)
 eda_outputs/
 
-# Keep outputs under dashboard
 !dashboard/eda_outputs/
 
+dashboard/predictions/
+
+models/
+*.pkl
+*.joblib
+*.h5
+*.pt
