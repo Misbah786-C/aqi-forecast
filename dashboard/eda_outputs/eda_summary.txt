@@ -1,7 +1,7 @@
 
-EDA SUMMARY REPORT (2025-11-03 16:10:16 UTC)
+EDA SUMMARY REPORT (2025-11-03 16:29:48 UTC)
 
-Rows: 4348
+Rows: 4349
 Columns: 29
 Missing Values: 0
 Numeric Columns: 27
