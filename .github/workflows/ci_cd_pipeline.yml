@@ -2,7 +2,7 @@ name: AQI Forecast CI/CD Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"   
+    - cron: "0 * * * *"
   workflow_dispatch:
   push:
     branches:
@@ -25,7 +25,6 @@ jobs:
       LON: "67.0011"
 
     steps:
-      
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -46,19 +45,34 @@ jobs:
           echo "Installed hopsworks version:"
           pip list | grep hopsworks || echo "Hopsworks not found!"
 
-       #Data Backfill (Historical + Live)
-      - name: Backfill Historical Data (3 APIs merged)
+      # Data Backfill
+      - name: Backfill Historical Data
         run: python features/features/backfill.py
 
-      - name: Backfill Live Data (2 APIs merged)
+      - name: Backfill Live Data
         run: python features/features/backfill_live.py
 
-        #eda
-      - name: Run EDA on latest features
+      # Train Model
+      - name: Train Model
+        run: python trainings/train_sklearn.py
+
+      # EDA after training (model-based plots)
+      - name: Run EDA after Training
         env:
           AQI_FORECAST_API_KEY: ${{ secrets.AQI_FORECAST_API_KEY }}
         run: python eda.py
 
+      # Generate Predictions
+      - name: Generate Predictions
+        run: python trainings/predict.py
+
+      # EDA after predictions
+      - name: Run EDA after Predictions
+        env:
+          AQI_FORECAST_API_KEY: ${{ secrets.AQI_FORECAST_API_KEY }}
+        run: python eda.py
+
+      # Commit updated EDA outputs
       - name: Commit updated EDA outputs
         run: |
           git config --global user.name "github-actions[bot]"
@@ -67,13 +81,7 @@ jobs:
           git commit -m "Auto-update: EDA outputs [skip ci]" || echo "No EDA changes to commit"
           git push || echo "No EDA changes to push"
 
-      #Train + Predict
-      - name: Train Model
-        run: python trainings/train_sklearn.py
-
-      - name: Generate Predictions
-        run: python trainings/predict.py
-
+      # Commit latest predictions
       - name: Commit latest predictions
         run: |
           git config --global user.name "github-actions[bot]"
@@ -82,7 +90,7 @@ jobs:
           git commit -m "Auto-update: Latest predictions [skip ci]" || echo "No prediction changes to commit"
           git push || echo "No prediction changes to push"
 
-      #Dashboard
+      # Dashboard
       - name: Sync outputs to dashboard
         run: |
           mkdir -p dashboard/eda_outputs
@@ -90,5 +98,5 @@ jobs:
           cp -r eda_outputs/* dashboard/eda_outputs/ || echo "No EDA outputs found"
           cp -r data/predictions/* dashboard/predictions/ || echo "No predictions found"
           git add dashboard/* || true
-          git commit -m "🪄 Sync: Dashboard updates [skip ci]" || echo "No dashboard changes"
+          git commit -m "Sync: Dashboard updates [skip ci]" || echo "No dashboard changes"
           git push || echo "No dashboard changes to push"

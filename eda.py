@@ -20,6 +20,7 @@ if not HOPSWORKS_API_KEY:
     logging.error("Missing 'AQI_FORECAST_API_KEY' in environment variables.")
     exit(1)
 
+# Connect to Hopsworks
 try:
     logging.info("Connecting to Hopsworks...")
     project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
@@ -30,6 +31,7 @@ except Exception as e:
     logging.error(f"Failed to connect to Hopsworks: {e}")
     exit(1)
 
+# Load feature data
 try:
     logging.info("Fetching latest feature data...")
     feature_group = fs.get_feature_group(name="aqi_features", version=1)
@@ -40,12 +42,13 @@ except Exception as e:
     logging.error(f"Failed to fetch feature data: {e}")
     exit(1)
 
+# Convert timestamp column
 try:
     df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], errors="coerce", utc=True)
 except Exception as e:
     logging.warning(f"Timestamp conversion issue: {e}")
 
-#Summary stats
+# Dataset-only EDA
 summary = f"""
 EDA SUMMARY REPORT ({datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC)
 
@@ -60,7 +63,7 @@ with open(os.path.join(OUTPUT_DIR, "eda_summary.txt"), "w") as f:
     f.write(summary)
 logging.info("EDA summary saved to eda_summary.txt")
 
-#AQI Trend
+# AQI trend
 try:
     plt.figure(figsize=(12, 5))
     sns.lineplot(data=df, x="timestamp_utc", y="aqi_aqicn", marker="o", linewidth=1.3)
@@ -75,7 +78,7 @@ try:
 except Exception as e:
     logging.warning(f"AQI trend plot failed: {e}")
 
-#Correlation Heatmap 
+# Correlation heatmap
 try:
     plt.figure(figsize=(8, 6))
     corr = df.corr(numeric_only=True)
@@ -88,7 +91,7 @@ try:
 except Exception as e:
     logging.warning(f"Correlation heatmap failed: {e}")
 
-#AQI vs Weather Features
+# Scatter plots
 weather_features = ["ow_temp", "ow_humidity", "ow_wind_speed"]
 for feature in weather_features:
     if feature in df.columns:
@@ -103,23 +106,24 @@ for feature in weather_features:
         except Exception as e:
             logging.warning(f"Failed to plot AQI vs {feature}: {e}")
 
+# Model-based EDA
 try:
-    model_meta = mr.get_model("rf_aqi_model")
-    latest_version = model_meta.get_best_version()
-    model_dir = latest_version.download()
+    model_name = "rf_aqi_model"
+    model_meta = mr.get_model(model_name)
+    latest_version = max([v.version for v in model_meta.get_versions()])  # latest version
+    model_dir = model_meta.get_version(latest_version).download()
 
     model_path = os.path.join(model_dir, "model.joblib")
     scaler_path = os.path.join(model_dir, "scaler.joblib")
 
     model = load(model_path)
     scaler = load(scaler_path)
-
     logging.info("Model and scaler loaded successfully.")
 except Exception as e:
     logging.error(f"Failed to load model/scaler: {e}")
     exit(1)
 
-#Feature Importance
+# Feature importance
 try:
     importances = model.feature_importances_
     feature_names = [
@@ -137,7 +141,7 @@ try:
 except Exception as e:
     logging.warning(f"Skipped feature importance plot: {e}")
 
-#Actual vs Predicted AQI 
+# Actual vs Predicted AQI
 try:
     from sklearn.metrics import r2_score, mean_absolute_error
 
