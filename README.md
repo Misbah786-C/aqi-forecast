@@ -224,7 +224,10 @@ gh workflow run "AQI Forecast CI/CD Pipeline"
 - **Next 3-Day Forecast** — with interactive charts  
 - **EDA Visuals** — trends, correlations, and feature importance (complete eda_outputs)
 
-Run it via:
+**Live Dashboard:**  
+[Pearls AQI Predictor — Streamlit App](https://aqi-forecast-nuqxmfiwdpicqcbdaclko2.streamlit.app/)
+
+Run locally:
 ```
 streamlit run dashboard/dashboard.py
 ```
@@ -278,6 +281,7 @@ All integrated seamlessly through **Hopsworks**, **GitHub Actions**, and **Strea
 **MIT License © 2025 Misbah Azhar**
 
 ---
+
 
 
 
