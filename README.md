@@ -5,6 +5,33 @@ An automated Machine learning pipeline that predicts Karachi’s Air Quality Ind
 
 ---
 
+## **Table of Contents**
+
+- [Overview](#overview)
+- [Project Structure](#project-structure)
+- [Setup Instructions](#setup-instructions)
+  - [Clone Repository](#clone-repository)
+  - [Create Virtual Environment](#create-virtual-environment)
+  - [Install Dependencies](#install-dependencies)
+  - [Configure .env File](#configure-env-file)
+  - [Authenticate Hopsworks](#authenticate-hopsworks)
+- [How It Works](#how-it-works)
+  1. [Data Collection](#1-data-collection)
+  2. [Feature Engineering & Backfill](#2-feature-engineering--backfill)
+  3. [Train Models](#3-train-models)
+  4. [Generate Predictions](#4-generate-predictions)
+  5. [Perform EDA](#5-perform-eda)
+  6. [Launch Dashboard](#6-launch-dashboard)
+- [CI/CD Automation (GitHub Actions)](#cicd-automation-github-actions)
+- [Models Used](#models-used)
+- [Key Outputs](#key-outputs)
+- [Dashboard Preview](#dashboard-preview)
+- [Future Enhancements](#future-enhancements)
+- [Acknowledgments](#acknowledgments)
+- [About the Project](#about-the-project)
+- [License](#license)
+---
+
 ## **Overview**
 
 This project automates the full **AQI prediction lifecycle**:
@@ -230,13 +257,15 @@ This project represents a **complete production grade MLOps pipeline**, automati
 - Forecast generation  
 - Visualization and dashboarding  
 
-All integrated seamlessly through **Hopsworks**, **GitHub Actions**, and **Streamlit** — enabling continuous, end-to-end AQI forecasting.
+All integrated seamlessly through **Hopsworks**, **GitHub Actions**, and **Streamlit** enabling continuous, end-to-end AQI forecasting.
+---
+
 ---
 
 <p align="center">
   <b>Misbah Azhar</b>  
   <br>
-  💻 Developer | Data & MLOps Enthusiast  
+  Developer | Data & MLOps Enthusiast  
   <br>
   <a href="mailto:misbahazhar018@gmail.com">misbahazhar018@gmail.com</a>  
   <br>
@@ -249,6 +278,7 @@ All integrated seamlessly through **Hopsworks**, **GitHub Actions**, and **Strea
 **MIT License © 2025 Misbah Azhar**
 
 ---
+
 
 
 
