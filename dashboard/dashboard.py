@@ -5,7 +5,6 @@ import plotly.express as px
 from datetime import datetime
 from PIL import Image
 import hopsworks
-from dotenv import load_dotenv
 
 # ---------------------------------------
 # PAGE CONFIG
@@ -34,21 +33,25 @@ st.markdown("""
 
 EDA_DIR = "dashboard/eda_outputs"
 
-@st.cache_data(ttl=300)
 def load_forecast_from_hopsworks():
     try:
-        # Streamlit Cloud or local env
+        # Use API key from environment (Streamlit Cloud / local)
         HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
         if not HOPSWORKS_API_KEY:
             st.error("Hopsworks API key not found in environment variables.")
             return pd.DataFrame()
 
+        # Login directly using API key to avoid local keystore
         project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
         fs = project.get_feature_store()
+
+        # Read feature group
         fg = fs.get_feature_group(name="aqi_predictions", version=2)
         df = fg.read()
 
-        # timestamp handling
+        # -----------------------
+        # TIMESTAMP HANDLING (UNCHANGED)
+        # -----------------------
         if "predicted_for_utc" in df.columns:
             df["predicted_for_utc"] = pd.to_datetime(df["predicted_for_utc"])
         elif "predicted_for_local" in df.columns:
@@ -57,6 +60,7 @@ def load_forecast_from_hopsworks():
             st.warning("No valid timestamp column found in predictions.")
             return pd.DataFrame()
 
+        # Add forecast_day if missing
         if "forecast_day" not in df.columns:
             df = df.sort_values("predicted_for_utc").reset_index(drop=True)
             df["forecast_day"] = range(len(df))
@@ -69,9 +73,9 @@ def load_forecast_from_hopsworks():
         return pd.DataFrame()
 
 
-# ---------------------------------------
+# -----------------------
 # SAFELY LOAD AND VALIDATE DATA
-# ---------------------------------------
+# -----------------------
 forecast_df = load_forecast_from_hopsworks()
 
 if forecast_df is None or forecast_df.empty:
