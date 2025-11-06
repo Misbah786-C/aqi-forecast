@@ -8,14 +8,18 @@ import hopsworks
 import numpy as np
 from requests.exceptions import RequestException
 
+
 load_dotenv()
 
 OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY")
 AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 CITY = os.getenv("CITY", "Karachi")
-LAT = os.getenv("LAT", "24.8607")
-LON = os.getenv("LON", "67.0011")
+LAT = float(os.getenv("LAT", "24.8607"))
+LON = float(os.getenv("LON", "67.0011"))
 HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
+
+FEATURE_GROUP_NAME = "aqi_features"
+FEATURE_GROUP_VERSION = 2
 
 if not OPENWEATHER_KEY or not AQICN_TOKEN or not HOPSWORKS_API_KEY:
     raise ValueError("Missing required API keys in .env file.")
@@ -31,6 +35,24 @@ EXPECTED_COLS = [
     "temp", "humidity", "pressure", "wind_speed",
     "aqi", "pm2_5", "pm10", "no2", "so2", "co"
 ]
+
+
+def safe_float(val):
+    """Convert to float safely, handling '-', None, or NaN."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def map_openweather_aqi(val):
+    """Map OpenWeather AQI 1–5 scale to approximate AQICN-like value."""
+    if pd.isna(val):
+        return np.nan
+    mapping = {1: 20, 2: 60, 3: 100, 4: 150, 5: 200}
+    return mapping.get(int(val), np.nan)
+
+
 
 def fetch_openweather():
     """Fetch weather + pollution data from OpenWeather."""
@@ -48,24 +70,25 @@ def fetch_openweather():
         components = air_data.get("list", [{}])[0].get("components", {})
 
         return {
-            "ow_temp": weather_data.get("main", {}).get("temp"),
-            "ow_humidity": weather_data.get("main", {}).get("humidity"),
-            "ow_pressure": weather_data.get("main", {}).get("pressure"),
-            "ow_wind_speed": weather_data.get("wind", {}).get("speed"),
-            "ow_wind_deg": weather_data.get("wind", {}).get("deg"),
-            "ow_clouds": weather_data.get("clouds", {}).get("all"),
-            "ow_pm10": components.get("pm10"),
-            "ow_pm2_5": components.get("pm2_5"),
-            "ow_co": components.get("co"),
-            "ow_no2": components.get("no2"),
-            "ow_so2": components.get("so2"),
-            "ow_o3": components.get("o3"),
-            "aqi_aqicn": air_data.get("list", [{}])[0].get("main", {}).get("aqi"),
+            "ow_temp": safe_float(weather_data.get("main", {}).get("temp")),
+            "ow_humidity": safe_float(weather_data.get("main", {}).get("humidity")),
+            "ow_pressure": safe_float(weather_data.get("main", {}).get("pressure")),
+            "ow_wind_speed": safe_float(weather_data.get("wind", {}).get("speed")),
+            "ow_wind_deg": safe_float(weather_data.get("wind", {}).get("deg")),
+            "ow_clouds": safe_float(weather_data.get("clouds", {}).get("all")),
+            "ow_pm10": safe_float(components.get("pm10")),
+            "ow_pm2_5": safe_float(components.get("pm2_5")),
+            "ow_co": safe_float(components.get("co")),
+            "ow_no2": safe_float(components.get("no2")),
+            "ow_so2": safe_float(components.get("so2")),
+            "ow_o3": safe_float(components.get("o3")),
+            "aqi_aqicn": map_openweather_aqi(
+                safe_float(air_data.get("list", [{}])[0].get("main", {}).get("aqi"))
+            ),
         }
-
     except RequestException as e:
-        logging.warning(f"🌩️ OpenWeather fetch failed: {e}")
-        return {col: None for col in EXPECTED_COLS if col.startswith("ow_") or col == "aqi_aqicn"}
+        logging.warning(f"OpenWeather fetch failed: {e}")
+        return {col: np.nan for col in EXPECTED_COLS if col.startswith("ow_") or col == "aqi_aqicn"}
 
 
 def fetch_aqicn():
@@ -82,83 +105,137 @@ def fetch_aqicn():
 
         iaqi = data["data"].get("iaqi", {})
         return {
-            "aqi": data["data"].get("aqi"),
-            "pm2_5": iaqi.get("pm25", {}).get("v"),
-            "pm10": iaqi.get("pm10", {}).get("v"),
-            "no2": iaqi.get("no2", {}).get("v"),
-            "so2": iaqi.get("so2", {}).get("v"),
-            "co": iaqi.get("co", {}).get("v"),
+            "aqi": safe_float(data["data"].get("aqi")),
+            "pm2_5": safe_float(iaqi.get("pm25", {}).get("v")),
+            "pm10": safe_float(iaqi.get("pm10", {}).get("v")),
+            "no2": safe_float(iaqi.get("no2", {}).get("v")),
+            "so2": safe_float(iaqi.get("so2", {}).get("v")),
+            "co": safe_float(iaqi.get("co", {}).get("v")),
+            "o3": safe_float(iaqi.get("o3", {}).get("v")),
         }
 
     except RequestException as e:
-        logging.warning(f"🌫️ AQICN fetch failed: {e}")
+        logging.warning(f"AQICN fetch failed: {e}")
+        return {}
+
+
+def fetch_openmeteo():
+    """Fetch fallback AQI from Open-Meteo."""
+    try:
+        url = (
+            f"https://air-quality-api.open-meteo.com/v1/air-quality?"
+            f"latitude={LAT}&longitude={LON}&hourly=us_aqi,pm10,pm2_5,"
+            f"carbon_monoxide,nitrogen_dioxide,sulfur_dioxide,ozone"
+        )
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json().get("hourly", {})
+        if not data or "us_aqi" not in data:
+            logging.warning("Open-Meteo returned no usable AQI data.")
+            return {}
+
+        last_idx = -1
+        return {
+            "aqi": safe_float(data["us_aqi"][last_idx]),
+            "pm2_5": safe_float(data.get("pm2_5", [np.nan])[last_idx]),
+            "pm10": safe_float(data.get("pm10", [np.nan])[last_idx]),
+            "co": safe_float(data.get("carbon_monoxide", [np.nan])[last_idx]),
+            "no2": safe_float(data.get("nitrogen_dioxide", [np.nan])[last_idx]),
+            "so2": safe_float(data.get("sulfur_dioxide", [np.nan])[last_idx]),
+            "o3": safe_float(data.get("ozone", [np.nan])[last_idx]),
+        }
+
+    except RequestException as e:
+        logging.warning(f"Open-Meteo fetch failed: {e}")
         return {}
 
 
 def fetch_and_upload():
+    """Fetch, clean, and upload to Hopsworks (v2)."""
     ow = fetch_openweather()
     aqicn = fetch_aqicn()
 
-    for pollutant in ["pm2_5", "pm10", "no2", "so2", "co", "aqi"]:
-        if aqicn.get(pollutant) is None:
-            aqicn[pollutant] = ow.get(f"ow_{pollutant}")
+    if not aqicn or pd.isna(aqicn.get("aqi")) or aqicn.get("aqi") in [None, 0, np.nan]:
+        logging.warning("AQICN returned invalid AQI — trying Open-Meteo fallback.")
+        meteo = fetch_openmeteo()
+        if meteo:
+            aqicn.update({k: v for k, v in meteo.items() if pd.notna(v)})
+            logging.info(f"Open-Meteo fallback AQI used: {aqicn.get('aqi')}")
+
+    for pollutant in ["pm2_5", "pm10", "no2", "so2", "co", "o3"]:
+        if pollutant not in aqicn or pd.isna(aqicn.get(pollutant)):
+            aqicn[pollutant] = ow.get(f"ow_{pollutant}", np.nan)
+
+    if pd.isna(aqicn.get("aqi")) or aqicn.get("aqi") is None:
+        aqicn["aqi"] = ow.get("aqi_aqicn", np.nan)
+        logging.info(f"Final fallback AQI used from OpenWeather: {aqicn['aqi']}")
 
     merged = {**ow, **aqicn, "city": CITY}
-
-    merged["timestamp_utc"] = pd.Timestamp(datetime.now(timezone.utc))
+    merged["timestamp_utc"] = pd.Timestamp.now(timezone.utc).floor("H")
 
     now_dt = merged["timestamp_utc"]
-    merged["hour"] = now_dt.hour
-    merged["day"] = now_dt.day
-    merged["month"] = now_dt.month
-    merged["weekday"] = now_dt.weekday()
+    merged.update({
+        "hour": now_dt.hour,
+        "day": now_dt.day,
+        "month": now_dt.month,
+        "weekday": now_dt.weekday()
+    })
 
     df_new = pd.DataFrame([merged])
-
-    mapping = {
-        "ow_temp": "temp",
-        "ow_humidity": "humidity",
-        "ow_pressure": "pressure",
-        "ow_wind_speed": "wind_speed",
-        "ow_pm2_5": "pm2_5",
-        "ow_pm10": "pm10",
-        "ow_no2": "no2",
-        "ow_so2": "so2",
-        "ow_co": "co",
-        "aqi_aqicn": "aqi"
-    }
-    for src, dest in mapping.items():
-        if dest not in df_new or df_new[dest].isna().all():
-            df_new[dest] = df_new[src]
-
     for col in EXPECTED_COLS:
         if col not in df_new.columns:
             df_new[col] = np.nan
-
     df_new = df_new[EXPECTED_COLS]
+    df_new["timestamp_utc"] = pd.to_datetime(df_new["timestamp_utc"], utc=True)
 
     for col in df_new.columns:
         if col not in ["city", "timestamp_utc"]:
             df_new[col] = pd.to_numeric(df_new[col], errors="coerce").astype(float)
 
-    df_new["timestamp_utc"] = pd.to_datetime(df_new["timestamp_utc"], utc=True)
+    logging.info(f"Prepared new record → Columns: {len(df_new.columns)}, Rows: {len(df_new)}")
+    logging.info(df_new.to_string(index=False))
 
-    logging.info(f"Fetched new data. Columns: {len(df_new.columns)}, Rows: {len(df_new)}")
-
+    
     try:
         project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
         fs = project.get_feature_store()
-        fg = fs.get_feature_group(name="aqi_features", version=1)
+        fg = fs.get_or_create_feature_group(
+            name=FEATURE_GROUP_NAME,
+            version=FEATURE_GROUP_VERSION,
+            primary_key=["timestamp_utc"],
+            description="Air quality and weather merged dataset (v2, all float types)",
+            online_enabled=False,
+        )
+
+        existing = fg.read()
+        latest_ts = existing["timestamp_utc"].max() if not existing.empty else None
+        new_ts = df_new["timestamp_utc"].iloc[0]
+
+        if latest_ts is not None and new_ts <= latest_ts:
+            logging.info(
+                f"Skipping insert — data for {new_ts} already exists in {FEATURE_GROUP_NAME} "
+                f"(v{FEATURE_GROUP_VERSION})."
+            )
+            return
+
+        if "o3" in df_new.columns:
+            logging.info("Dropping plain 'o3' from df_new to keep FG v2 schema")
+            df_new = df_new.drop(columns=["o3"])
+
+        logging.info("Uploading columns: %s", list(df_new.columns))
         fg.insert(df_new, write_options={"wait_for_job": False})
-        logging.info("☁️ Successfully uploaded record to Hopsworks Feature Store.")
+        logging.info(
+            f"Inserted new AQI record for {new_ts} into {FEATURE_GROUP_NAME} (v{FEATURE_GROUP_VERSION})."
+        )
+
     except Exception as e:
         logging.warning(f"Upload to Hopsworks failed: {e}")
 
 
+
 if __name__ == "__main__":
-    logging.info("Starting single AQI + weather fetch and Hopsworks upload...")
+    logging.info("Starting live AQI + weather fetch and upload...")
     try:
         fetch_and_upload()
-        logging.info("Successfully uploaded record to Hopsworks Feature Store. Stopping execution.")
     except Exception as e:
         logging.error(f"Error during execution: {e}")

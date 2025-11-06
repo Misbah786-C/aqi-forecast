@@ -4,9 +4,10 @@ import streamlit as st
 import plotly.express as px
 from datetime import datetime
 from PIL import Image
+import hopsworks
 
 # ---------------------------------------
-# Page Setup
+# PAGE CONFIG
 # ---------------------------------------
 st.set_page_config(
     page_title="Pearls AQI Predictor Dashboard",
@@ -14,9 +15,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# ---------------------------------------
-# Hero Header
-# ---------------------------------------
 st.markdown("""
 <div style='text-align: center; padding: 20px 0 10px 0;'>
     <h1 style='color: #F5F5F5; font-size: 42px; font-weight: 700;'>
@@ -33,18 +31,55 @@ st.markdown("""
 <hr style='border: 0.5px solid #333; margin: 20px 0;'>
 """, unsafe_allow_html=True)
 
-
-PRED_PATH = "data/predictions/latest_predictions.csv"
 EDA_DIR = "dashboard/eda_outputs"
 
+# ---------------------------------------
+# LOAD FORECAST DATA FROM HOPSWORKS
+# ---------------------------------------
+@st.cache_data(ttl=300)
+def load_forecast_from_hopsworks():
+    try:
+        HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
+        project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
+        fs = project.get_feature_store()
 
-@st.cache_data
-def load_data(path):
-    return pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
+        # Auto-detect latest version (v2 or higher)
+        fg = fs.get_feature_group(name="aqi_predictions", version=2)
+        df = fg.read()
 
-forecast_df = load_data(PRED_PATH)
+        # Handle missing columns gracefully
+        if "predicted_for_utc" in df.columns:
+            df["predicted_for_utc"] = pd.to_datetime(df["predicted_for_utc"])
+        elif "predicted_for_local" in df.columns:
+            df["predicted_for_utc"] = pd.to_datetime(df["predicted_for_local"])
+        else:
+            st.warning("No valid timestamp column found in predictions.")
+            return pd.DataFrame()
 
+        # Add fallback forecast_day if missing
+        if "forecast_day" not in df.columns:
+            df = df.sort_values("predicted_for_utc").reset_index(drop=True)
+            df["forecast_day"] = range(len(df))
 
+        df = df.sort_values("predicted_for_utc").reset_index(drop=True)
+        return df
+
+    except Exception as e:
+        st.warning(f"Could not fetch data from Hopsworks: {e}")
+        return pd.DataFrame()
+
+# ---------------------------------------
+# SAFELY LOAD AND VALIDATE DATA
+# ---------------------------------------
+forecast_df = load_forecast_from_hopsworks()
+
+if forecast_df is None or forecast_df.empty:
+    st.warning("⚠️ No forecast data found. Please run your `predict.py` script first.")
+    st.stop()
+
+# ---------------------------------------
+# AQI CATEGORY FUNCTION
+# ---------------------------------------
 def aqi_category(aqi):
     if aqi <= 50:
         return ("Good", "#43A047", "Breathe it in, Karachi’s serving rare, premium grade oxygen today", "Pleasant🌿 ")
@@ -59,6 +94,9 @@ def aqi_category(aqi):
     else:
         return ("Hazardous", "#7E0023", "Airpocalypse mode: unlocked. Stay inside, love your air purifier, and pray for rain", "Extreme Danger💀")
 
+# ---------------------------------------
+# STYLES
+# ---------------------------------------
 st.markdown("""
 <style>
 .stApp {
@@ -106,88 +144,79 @@ hr {
     font-size: 13px;
     margin-top: 40px;
 }
-.streamlit-expanderHeader {
-    font-weight: 600 !important;
-    color: #00CED1 !important;
-    font-size: 16px !important;
-}
-.streamlit-expanderHeader:hover {
-    color: #4DD0E1 !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
-# Today AQI Card
-# Today AQI Card
-if not forecast_df.empty:
-    forecast_df["predicted_for_utc"] = pd.to_datetime(forecast_df["predicted_for_utc"])
-    today = forecast_df.iloc[0]
-    aqi_val = today["predicted_aqi"]
-    cat, color, comment, mood = aqi_category(aqi_val)
+# ---------------------------------------
+# TODAY’S AQI CARD
+# ---------------------------------------
+forecast_df["predicted_for_utc"] = pd.to_datetime(forecast_df["predicted_for_utc"])
+today = forecast_df.iloc[0]
+aqi_val = today["predicted_aqi"]
+cat, color, comment, mood = aqi_category(aqi_val)
 
-    # Use H2 Markdown for consistent font
-    st.markdown("## ☁️ Today’s Air Quality Overview")
-    st.markdown(f"""
-    <div class='today-card'>
-        <h2 style='color:#e0e0e0;'>Karachi — {today["predicted_for_utc"].strftime("%A, %b %d")}</h2>
-        <p style='color:#bbb;'>Live AQI Measurement</p>
-        <div class='aqi-value' style='color:{color};'>{int(aqi_val)} AQI</div>
-        <h3 style='color:{color}; margin:0;'>{cat} — {mood}</h3>
-        <p style='color:#ccc; font-size:15px;'>{comment}</p>
-        <p style='color:#777; font-size:12px; margin-top:10px;'>
-            Last Updated: {today["predicted_for_utc"].strftime("%Y-%m-%d %H:%M UTC")}
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+st.markdown("## ☁️ Today’s Air Quality Overview")
+st.markdown(f"""
+<div class='today-card'>
+    <h2 style='color:#e0e0e0;'>Karachi — {today["predicted_for_utc"].strftime("%A, %b %d")}</h2>
+    <p style='color:#bbb;'>Live AQI Measurement</p>
+    <div class='aqi-value' style='color:{color};'>{int(aqi_val)} AQI</div>
+    <h3 style='color:{color}; margin:0;'>{cat} — {mood}</h3>
+    <p style='color:#ccc; font-size:15px;'>{comment}</p>
+    <p style='color:#777; font-size:12px; margin-top:10px;'>
+        Last Updated: {today["predicted_for_utc"].strftime("%Y-%m-%d %H:%M UTC")}
+    </p>
+</div>
+""", unsafe_allow_html=True)
 
-    # Next 3 Days Forecast
-    st.markdown("## Air Quality Forecast")
-    next_days = forecast_df[forecast_df["forecast_day"] > 0]
-    auto_expand = True if aqi_val > 150 else False
+# ---------------------------------------
+# NEXT 3 DAYS FORECAST
+# ---------------------------------------
+st.markdown("## Air Quality Forecast")
+next_days = forecast_df[forecast_df["forecast_day"] > 0]
+auto_expand = True if aqi_val > 150 else False
 
-    with st.expander("View Next 3 Days Forecast", expanded=auto_expand):
+with st.expander("View Next 3 Days Forecast", expanded=auto_expand):
+    st.markdown("<br>", unsafe_allow_html=True)
+    cols = st.columns(3)
+    for i, row in enumerate(next_days.itertuples()):
+        aqi_val = row.predicted_aqi
+        cat, color, comment, mood = aqi_category(aqi_val)
+        date_str = row.predicted_for_utc.strftime("%A, %b %d")
+
+        with cols[i]:
+            st.markdown(f"""
+                <div class='forecast-card' style='border-top:5px solid {color};'>
+                    <h4 style='margin:0; color:#eee;'>{date_str}</h4>
+                    <h2 style='color:{color}; margin:5px 0;'>{int(aqi_val)} AQI</h2>
+                    <p style='color:{color}; font-weight:600; margin:0;'>{cat} — {mood}</p>
+                    <p style='color:#bbb; font-size:13px;'>{comment}</p>
+                </div>
+            """, unsafe_allow_html=True)
+
+    with st.expander("View AQI Forecast Trend", expanded=False):
         st.markdown("<br>", unsafe_allow_html=True)
-        cols = st.columns(3)
-        for i, row in enumerate(next_days.itertuples()):
-            aqi_val = row.predicted_aqi
-            cat, color, comment, mood = aqi_category(aqi_val)
-            date_str = row.predicted_for_utc.strftime("%A, %b %d")
+        fig = px.line(
+            forecast_df,
+            x="predicted_for_utc",
+            y="predicted_aqi",
+            title="AQI Forecast Trend (Today + Next 3 Days)",
+            markers=True,
+            color_discrete_sequence=["#00CED1"]
+        )
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(255,255,255,0.05)",
+            font=dict(color="#fff"),
+            xaxis=dict(title="Date", showgrid=True, gridcolor="#333"),
+            yaxis=dict(title="Predicted AQI", showgrid=True, gridcolor="#333"),
+            margin=dict(t=60, b=40, l=40, r=40)
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-            with cols[i]:
-                st.markdown(f"""
-                    <div class='forecast-card' style='border-top:5px solid {color};'>
-                        <h4 style='margin:0; color:#eee;'>{date_str}</h4>
-                        <h2 style='color:{color}; margin:5px 0;'>{int(aqi_val)} AQI</h2>
-                        <p style='color:{color}; font-weight:600; margin:0;'>{cat} — {mood}</p>
-                        <p style='color:#bbb; font-size:13px;'>{comment}</p>
-                    </div>
-                """, unsafe_allow_html=True)
-
-        # Collapsible AQI Trend Chart ---
-        with st.expander("View AQI Forecast Trend", expanded=False):
-            st.markdown("<br>", unsafe_allow_html=True)
-            fig = px.line(
-                forecast_df,
-                x="predicted_for_utc",
-                y="predicted_aqi",
-                title="AQI Forecast Trend (Today + Next 3 Days)",
-                markers=True,
-                color_discrete_sequence=["#00CED1"]
-            )
-            fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(255,255,255,0.05)",
-                font=dict(color="#fff"),
-                xaxis=dict(title="Date", showgrid=True, gridcolor="#333"),
-                yaxis=dict(title="Predicted AQI", showgrid=True, gridcolor="#333"),
-                margin=dict(t=60, b=40, l=40, r=40)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.warning("No forecast data found. Please run your `predict.py` script first.")
-
-# EDA Outputs
+# ---------------------------------------
+# EDA SECTION
+# ---------------------------------------
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("## 🔍 Exploratory Data Analysis Insights")
 

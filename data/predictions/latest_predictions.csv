@@ -1,5 +1,13 @@
+<<<<<<< HEAD
 forecast_day,predicted_aqi,predicted_for_utc,model_version,note
 0,161.0,2025-11-05 17:25:05.081115,64,Real-time AQI
 1,47.575,2025-11-06 17:25:05.081115,64,Predicted AQI
 2,48.775,2025-11-07 17:25:05.081115,64,Predicted AQI
 3,48.825,2025-11-08 17:25:05.081115,64,Predicted AQI
+=======
+city,forecast_day,predicted_aqi,predicted_for_utc,model_version,note,created_at
+Karachi,0,161.0,2025-11-05 22:56:56.638980+05:00,64,Real-time AQI,2025-11-05 17:56:56.638980+00:00
+Karachi,1,80.255,2025-11-06 12:00:00+05:00,64,Predicted AQI,2025-11-05 17:56:56.638980+00:00
+Karachi,2,104.275,2025-11-07 12:00:00+05:00,64,Predicted AQI,2025-11-05 17:56:56.638980+00:00
+Karachi,3,83.545,2025-11-08 12:00:00+05:00,64,Predicted AQI,2025-11-05 17:56:56.638980+00:00
+>>>>>>> f2d35c9 (AQI Forecast CI/CD Pipeline)

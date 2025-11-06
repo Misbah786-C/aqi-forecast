@@ -1,6 +1,6 @@
 {
     "model_name": "rf_aqi_model",
-    "trained_at": "2025-11-03T18:41:05.538708",
+    "trained_at": "2025-11-06T17:50:01.207994",
     "features_used": [
         "ow_temp",
         "ow_humidity",
@@ -31,8 +31,8 @@
     ],
     "target": "aqi_aqicn",
     "metrics": {
-        "RMSE": 7.423,
-        "MAE": 3.579,
-        "R2": 0.835
+        "RMSE": 5.626,
+        "MAE": 3.563,
+        "R2": 0.903
     }
 }

@@ -2,7 +2,7 @@ name: AQI Forecast CI/CD Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 */4 * * *"
   workflow_dispatch:
   push:
     branches:
@@ -45,12 +45,21 @@ jobs:
           echo "Installed hopsworks version:"
           pip list | grep hopsworks || echo "Hopsworks not found!"
 
-      # Data Backfill
+        env:
+          AQI_FORECAST_API_KEY: ${{ secrets.AQI_FORECAST_API_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          AQICN_TOKEN: ${{ secrets.AQICN_TOKEN }}
+      
+      
+        # Data Backfill
       - name: Backfill Historical Data
         run: python features/features/backfill.py
 
       - name: Backfill Live Data
         run: python features/features/backfill_live.py
+
+      - name: Run features upload (historical data)
+        run: python features/features/features.py
 
       # Train Model
       - name: Train Model

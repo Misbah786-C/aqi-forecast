@@ -4,35 +4,33 @@ import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
 import hopsworks
-from hsfs.feature_group import FeatureGroup
 from hsfs.client.exceptions import FeatureStoreException
 import logging
 
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 BASE_DIR = os.getcwd()
+
 
 OPENMETEO_PATH = os.path.join(BASE_DIR, "data", "raw_openmeteo", "openmeteo_6months.csv")
 OPENWEATHER_PATH = os.path.join(BASE_DIR, "data", "raw_openweather", "openweather_data.csv")
 AQICN_PATH = os.path.join(BASE_DIR, "data", "raw_aqicn", "aqicn_data.csv")
 
-FEATURES_DIR = os.path.join(BASE_DIR, "data", "features")
-os.makedirs(FEATURES_DIR, exist_ok=True)
-
-TRAIN_CSV = os.path.join(FEATURES_DIR, "training_dataset.csv")
-TRAIN_PARQUET = TRAIN_CSV.replace(".csv", ".parquet")
-
 CITY = "Karachi"
+
 
 load_dotenv()
 HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
-OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY")
-AQICN_TOKEN = os.getenv("AQICN_TOKEN")
+
+FEATURE_GROUP_NAME = "aqi_features"
+FEATURE_GROUP_VERSION = 2
 
 
 def load_csv(path, name):
     if not os.path.exists(path):
         logging.warning(f"Missing file: {path}")
         return pd.DataFrame()
+
     df = pd.read_csv(path)
     if "datetime" in df.columns:
         df["timestamp_utc"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
@@ -40,6 +38,7 @@ def load_csv(path, name):
     else:
         logging.warning(f"Missing 'datetime' column in {name}")
         return pd.DataFrame()
+
     df.dropna(subset=["timestamp_utc"], inplace=True)
     df.drop_duplicates(subset=["timestamp_utc"], inplace=True)
     df.sort_values("timestamp_utc", inplace=True)
@@ -59,10 +58,7 @@ def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
         if (df[col] == 0).any() and (df[col] == 0).mean() < 0.8:
             df.loc[df[col] == 0, col] = df[col].median()
 
-    if "city" not in df.columns:
-        df["city"] = CITY
-    df["city"].fillna(CITY, inplace=True)
-
+    df["city"] = CITY
     df["hour"] = df["timestamp_utc"].dt.hour.astype(float)
     df["day"] = df["timestamp_utc"].dt.day.astype(float)
     df["month"] = df["timestamp_utc"].dt.month.astype(float)
@@ -76,7 +72,7 @@ def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge_local():
-    logging.info("Merging Open-Meteo + OpenWeather + AQICN")
+    logging.info("Merging Open-Meteo + OpenWeather + AQICN datasets...")
     df_meteo = load_csv(OPENMETEO_PATH, "Open-Meteo")
     df_ow = load_csv(OPENWEATHER_PATH, "OpenWeather")
     df_aqi = load_csv(AQICN_PATH, "AQICN")
@@ -89,10 +85,11 @@ def merge_local():
     df_combined = dfs[0]
     for df_next in dfs[1:]:
         df_combined = pd.merge_asof(
-            df_combined, df_next,
+            df_combined.sort_values("timestamp_utc"),
+            df_next.sort_values("timestamp_utc"),
             on="timestamp_utc",
             direction="nearest",
-            tolerance=pd.Timedelta("15min")
+            tolerance=pd.Timedelta("1h")
         )
 
     df_combined.columns = (
@@ -106,12 +103,11 @@ def merge_local():
     df_combined = clean_dataset(df_combined)
 
     if "o3" in df_combined.columns:
-        df_combined.drop(columns=["o3"], inplace=True)
-        logging.info("Dropped 'o3' column (too many NaNs)")
+        df_combined["o3"].fillna(df_combined["o3"].median(), inplace=True)
+    else:
+        df_combined["o3"] = np.nan
 
-    df_combined.to_csv(TRAIN_CSV, index=False)
-    df_combined.to_parquet(TRAIN_PARQUET, index=False)
-    logging.info(f"Saved merged dataset → {TRAIN_PARQUET}")
+    logging.info(f"Merge complete: {len(df_combined)} rows, {df_combined.shape[1]} columns")
     return df_combined
 
 
@@ -120,35 +116,34 @@ def upload_to_hopsworks(df: pd.DataFrame):
     project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
     fs = project.get_feature_store()
 
-    version = 1
-    fg = None
-    uploaded = False
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    df[num_cols] = df[num_cols].astype(float)
 
-    while not uploaded:
-        try:
-            fg = fs.get_or_create_feature_group(
-                name="aqi_features",
-                version=version,
-                primary_key=["timestamp_utc"],
-                description="Air quality and weather merged dataset",
-                online_enabled=False,
-            )
-            fg.insert(df, write_options={"wait_for_job": True})
-            logging.info(f"Uploaded to feature group: aqi_features v{version}")
-            uploaded = True
-        except FeatureStoreException as e:
-            if "not compatible" in str(e).lower():
-                version += 1
-                logging.warning(f"Schema mismatch, retrying with version {version}...")
-            else:
-                logging.error(f"Hopsworks upload failed: {e}")
-                break
+    if "o3" in df.columns:
+        logging.info("Dropping plain 'o3' column to match aqi_features v2 schema")
+        df = df.drop(columns=["o3"])
+
+    logging.info("Uploading columns: %s", list(df.columns))
+
+    try:
+        fg = fs.get_or_create_feature_group(
+            name=FEATURE_GROUP_NAME,
+            version=FEATURE_GROUP_VERSION,
+            primary_key=["timestamp_utc"],
+            description="Air quality and weather merged dataset (v2, all float types)",
+            online_enabled=False,
+        )
+        fg.insert(df, write_options={"wait_for_job": True})
+        logging.info(f"Uploaded {len(df)} rows to '{FEATURE_GROUP_NAME}' (v{FEATURE_GROUP_VERSION})")
+
+    except FeatureStoreException as e:
+        logging.error(f"Hopsworks upload failed: {e}")
 
 
 def backfill():
     logging.info(f"Running backfill at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     df = merge_local()
-    if df is None:
+    if df is None or df.empty:
         logging.error("Backfill failed — no merged data.")
         return
     upload_to_hopsworks(df)
