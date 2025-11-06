@@ -90,22 +90,18 @@ jobs:
           git commit -m "Auto-update: EDA outputs [skip ci]" || echo "No EDA changes to commit"
           git push || echo "No EDA changes to push"
 
-      # Commit latest predictions
-      - name: Commit latest predictions
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/predictions/latest_predictions.csv || true
-          git commit -m "Auto-update: Latest predictions [skip ci]" || echo "No prediction changes to commit"
-          git push || echo "No prediction changes to push"
+        # Log success for prediction upload to feature store
+      - name: Log prediction upload success
+        run: echo "Predictions uploaded to Hopsworks feature group (aqi_predictions)"
 
-      # Dashboard
-      - name: Sync outputs to dashboard
+      
+
+      # Sync EDA outputs to dashboard (optional)
+      - name: Sync EDA outputs to dashboard
         run: |
           mkdir -p dashboard/eda_outputs
-          mkdir -p dashboard/predictions
           cp -r eda_outputs/* dashboard/eda_outputs/ || echo "No EDA outputs found"
-          cp -r data/predictions/* dashboard/predictions/ || echo "No predictions found"
           git add dashboard/* || true
-          git commit -m "Sync: Dashboard updates [skip ci]" || echo "No dashboard changes"
+          git commit -m "Sync: Dashboard EDA updates [skip ci]" || echo "No dashboard changes"
           git push || echo "No dashboard changes to push"
+
