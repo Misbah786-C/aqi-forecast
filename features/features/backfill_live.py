@@ -151,10 +151,11 @@ def fetch_openmeteo():
 
 
 def fetch_and_upload():
-    """Fetch, clean, and upload to Hopsworks (v2)."""
+    """Fetch, clean, forward-fill, and upload live AQI + weather data to Hopsworks."""
     ow = fetch_openweather()
     aqicn = fetch_aqicn()
 
+    # Use Open-Meteo fallback if AQICN is invalid
     if not aqicn or pd.isna(aqicn.get("aqi")) or aqicn.get("aqi") in [None, 0, np.nan]:
         logging.warning("AQICN returned invalid AQI — trying Open-Meteo fallback.")
         meteo = fetch_openmeteo()
@@ -162,10 +163,12 @@ def fetch_and_upload():
             aqicn.update({k: v for k, v in meteo.items() if pd.notna(v)})
             logging.info(f"Open-Meteo fallback AQI used: {aqicn.get('aqi')}")
 
+    # Fill any missing pollutant values with OpenWeather values
     for pollutant in ["pm2_5", "pm10", "no2", "so2", "co", "o3"]:
         if pollutant not in aqicn or pd.isna(aqicn.get(pollutant)):
             aqicn[pollutant] = ow.get(f"ow_{pollutant}", np.nan)
 
+    # Final fallback for AQI
     if pd.isna(aqicn.get("aqi")) or aqicn.get("aqi") is None:
         aqicn["aqi"] = ow.get("aqi_aqicn", np.nan)
         logging.info(f"Final fallback AQI used from OpenWeather: {aqicn['aqi']}")
@@ -182,12 +185,15 @@ def fetch_and_upload():
     })
 
     df_new = pd.DataFrame([merged])
+
+    # Ensure all expected columns exist
     for col in EXPECTED_COLS:
         if col not in df_new.columns:
             df_new[col] = np.nan
     df_new = df_new[EXPECTED_COLS]
     df_new["timestamp_utc"] = pd.to_datetime(df_new["timestamp_utc"], utc=True)
 
+    # Ensure numeric columns are floats
     for col in df_new.columns:
         if col not in ["city", "timestamp_utc"]:
             df_new[col] = pd.to_numeric(df_new[col], errors="coerce").astype(float)
@@ -195,7 +201,9 @@ def fetch_and_upload():
     logging.info(f"Prepared new record → Columns: {len(df_new.columns)}, Rows: {len(df_new)}")
     logging.info(df_new.to_string(index=False))
 
-    
+    # ──────────────────────────────
+    # Upload to Hopsworks with forward/backward fill
+    # ──────────────────────────────
     try:
         project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
         fs = project.get_feature_store()
@@ -207,26 +215,34 @@ def fetch_and_upload():
             online_enabled=False,
         )
 
-        existing = fg.read()
+        # Read existing data
+        existing = fg.read().sort_values("timestamp_utc")
+        if not existing.empty:
+            # Append new row
+            combined = pd.concat([existing, df_new], ignore_index=True)
+            # Forward/backward fill numeric columns
+            num_cols = combined.select_dtypes(include=[np.number]).columns
+            combined[num_cols] = combined[num_cols].ffill().bfill()
+            # Only keep the new timestamp for insertion
+            df_new = combined[combined["timestamp_utc"] == merged["timestamp_utc"]]
+        else:
+            num_cols = df_new.select_dtypes(include=[np.number]).columns
+            df_new[num_cols] = df_new[num_cols].ffill().bfill()
+
+        # Drop plain 'o3' before upload
+        if "o3" in df_new.columns:
+            df_new = df_new.drop(columns=["o3"])
+
+        # Avoid duplicates
         latest_ts = existing["timestamp_utc"].max() if not existing.empty else None
         new_ts = df_new["timestamp_utc"].iloc[0]
-
         if latest_ts is not None and new_ts <= latest_ts:
-            logging.info(
-                f"Skipping insert — data for {new_ts} already exists in {FEATURE_GROUP_NAME} "
-                f"(v{FEATURE_GROUP_VERSION})."
-            )
+            logging.info(f"Skipping insert — data for {new_ts} already exists in {FEATURE_GROUP_NAME} (v{FEATURE_GROUP_VERSION}).")
             return
-
-        if "o3" in df_new.columns:
-            logging.info("Dropping plain 'o3' from df_new to keep FG v2 schema")
-            df_new = df_new.drop(columns=["o3"])
 
         logging.info("Uploading columns: %s", list(df_new.columns))
         fg.insert(df_new, write_options={"wait_for_job": False})
-        logging.info(
-            f"Inserted new AQI record for {new_ts} into {FEATURE_GROUP_NAME} (v{FEATURE_GROUP_VERSION})."
-        )
+        logging.info(f"✅ Inserted new AQI record for {new_ts} into {FEATURE_GROUP_NAME} (v{FEATURE_GROUP_VERSION}).")
 
     except Exception as e:
         logging.warning(f"Upload to Hopsworks failed: {e}")

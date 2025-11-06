@@ -150,7 +150,6 @@ def fetch_openmeteo():
         return {}
 
 
-
 def fetch_and_upload():
     ow = fetch_openweather()
     aqicn = fetch_aqicn()
@@ -196,7 +195,7 @@ def fetch_and_upload():
     logging.info(df_new.to_string(index=False))
 
     # ──────────────────────────────
-    # Upload to Hopsworks
+    # Upload to Hopsworks with forward fill
     # ──────────────────────────────
     try:
         project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
@@ -209,28 +208,27 @@ def fetch_and_upload():
             online_enabled=False,
         )
 
-        # Avoid duplicates safely
+        # Read existing data
         existing = fg.read()
-        latest_ts = existing["timestamp_utc"].max() if not existing.empty else None
-        new_ts = df_new["timestamp_utc"].iloc[0]
+        if not existing.empty:
+            existing = existing.sort_values("timestamp_utc")
+            # Append new row
+            df_combined = pd.concat([existing, df_new], ignore_index=True)
+            # Forward fill numeric columns
+            num_cols = df_combined.select_dtypes(include=[np.number]).columns
+            df_combined[num_cols] = df_combined[num_cols].ffill().bfill()
+            # Keep only the new row to insert
+            df_new = df_combined[df_combined["timestamp_utc"] == merged["timestamp_utc"]]
+        else:
+            logging.info("No existing data — inserting first row.")
+            df_new[num_cols] = df_new[num_cols].ffill().bfill()
 
-        if latest_ts is not None and new_ts <= latest_ts:
-            logging.info(
-                f"Skipping insert — data for {new_ts} already exists in {FEATURE_GROUP_NAME} "
-                f"(v{FEATURE_GROUP_VERSION})."
-            )
-            return
-
-        # Drop plain 'o3' if present before upload
+        # Drop plain 'o3' before upload
         if "o3" in df_new.columns:
-            logging.info("Dropping plain 'o3' from df_new to keep FG v2 schema")
             df_new = df_new.drop(columns=["o3"])
 
-        logging.info("Uploading columns: %s", list(df_new.columns))
         fg.insert(df_new, write_options={"wait_for_job": False})
-        logging.info(
-            f"✅ Inserted new AQI record for {new_ts} into {FEATURE_GROUP_NAME} (v{FEATURE_GROUP_VERSION})."
-        )
+        logging.info(f"✅ Inserted new AQI record for {merged['timestamp_utc']} into {FEATURE_GROUP_NAME} (v{FEATURE_GROUP_VERSION}).")
 
     except Exception as e:
         logging.warning(f"Upload to Hopsworks failed: {e}")

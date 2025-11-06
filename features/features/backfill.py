@@ -50,14 +50,16 @@ def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
+    # Forward fill all numeric columns first
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    df[num_cols] = df[num_cols].ffill().bfill()  # Forward fill, then backfill for leading NaNs
+
+    # For any remaining NaNs, fallback to median
     for col in num_cols:
-        df[col] = df[col].interpolate(method="linear", limit_direction="both")
         if df[col].isna().sum() > 0:
             df[col].fillna(df[col].median(), inplace=True)
-        if (df[col] == 0).any() and (df[col] == 0).mean() < 0.8:
-            df.loc[df[col] == 0, col] = df[col].median()
 
+    # Keep city and timestamp info
     df["city"] = CITY
     df["hour"] = df["timestamp_utc"].dt.hour.astype(float)
     df["day"] = df["timestamp_utc"].dt.day.astype(float)
@@ -67,8 +69,9 @@ def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
     df.drop_duplicates(subset=["timestamp_utc"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    logging.info(f"Cleaned dataset: {df.shape[0]} rows, {df.shape[1]} columns")
+    logging.info(f"Cleaned dataset: {df.shape[0]} rows, {df.shape[1]} columns (forward filled missing values)")
     return df
+
 
 
 def merge_local():
