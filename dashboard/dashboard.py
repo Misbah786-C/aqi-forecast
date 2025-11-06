@@ -5,6 +5,11 @@ import plotly.express as px
 from datetime import datetime
 from PIL import Image
 import hopsworks
+from dotenv import load_dotenv
+
+HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+AQICN_TOKEN = os.getenv("AQICN_TOKEN")
 
 # ---------------------------------------
 # PAGE CONFIG
