@@ -7,10 +7,6 @@ from PIL import Image
 import hopsworks
 from dotenv import load_dotenv
 
-HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-AQICN_TOKEN = os.getenv("AQICN_TOKEN")
-
 # ---------------------------------------
 # PAGE CONFIG
 # ---------------------------------------
@@ -38,21 +34,21 @@ st.markdown("""
 
 EDA_DIR = "dashboard/eda_outputs"
 
-# ---------------------------------------
-# LOAD FORECAST DATA FROM HOPSWORKS
-# ---------------------------------------
 @st.cache_data(ttl=300)
 def load_forecast_from_hopsworks():
     try:
+        # Streamlit Cloud or local env
         HOPSWORKS_API_KEY = os.getenv("AQI_FORECAST_API_KEY")
+        if not HOPSWORKS_API_KEY:
+            st.error("Hopsworks API key not found in environment variables.")
+            return pd.DataFrame()
+
         project = hopsworks.login(api_key_value=HOPSWORKS_API_KEY)
         fs = project.get_feature_store()
-
-        # Auto-detect latest version (v2 or higher)
         fg = fs.get_feature_group(name="aqi_predictions", version=2)
         df = fg.read()
 
-        # Handle missing columns gracefully
+        # timestamp handling
         if "predicted_for_utc" in df.columns:
             df["predicted_for_utc"] = pd.to_datetime(df["predicted_for_utc"])
         elif "predicted_for_local" in df.columns:
@@ -61,7 +57,6 @@ def load_forecast_from_hopsworks():
             st.warning("No valid timestamp column found in predictions.")
             return pd.DataFrame()
 
-        # Add fallback forecast_day if missing
         if "forecast_day" not in df.columns:
             df = df.sort_values("predicted_for_utc").reset_index(drop=True)
             df["forecast_day"] = range(len(df))
@@ -72,6 +67,7 @@ def load_forecast_from_hopsworks():
     except Exception as e:
         st.warning(f"Could not fetch data from Hopsworks: {e}")
         return pd.DataFrame()
+
 
 # ---------------------------------------
 # SAFELY LOAD AND VALIDATE DATA
